@@ -1,0 +1,7 @@
+project.lock.json
+GENERATED_CLASSES
+*.xproj.user
+*.VC.db
+.vs
+bin/
+obj/
