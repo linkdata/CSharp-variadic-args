@@ -2,6 +2,7 @@ project.lock.json
 GENERATED_CLASSES
 *.xproj.user
 *.VC.db
+*.VC.opendb
 .vs
 bin/
 obj/
