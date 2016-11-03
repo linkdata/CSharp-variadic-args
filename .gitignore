@@ -4,5 +4,7 @@ GENERATED_CLASSES
 *.VC.db
 *.VC.opendb
 .vs
+NativeAPI/Debug/
+NativeAPI/Release/
 bin/
 obj/
