@@ -8,14 +8,13 @@ namespace CSharpVarArgsNative
 {
     public static class NativeAPI
     {
-        public const long STAR_TYPE_STRING = 0x01;
-        public const long STAR_TYPE_BINARY = 0x02;
-        public const long STAR_TYPE_LONG = 0x03;
-        public const long STAR_TYPE_ULONG = 0x04;
-        public const long STAR_TYPE_DECIMAL = 0x05; // Stored as a ULONG using X6Decimal, so not tested
-        public const long STAR_TYPE_FLOAT = 0x06;
-        public const long STAR_TYPE_DOUBLE = 0x07;
-        public const long STAR_TYPE_REFERENCE = 0x08;
+        public const long TYPE_STRING = 0x01;
+        public const long TYPE_BINARY = 0x02;
+        public const long TYPE_LONG = 0x03;
+        public const long TYPE_ULONG = 0x04;
+        public const long TYPE_FLOAT = 0x06;
+        public const long TYPE_DOUBLE = 0x07;
+        public const long TYPE_REFERENCE = 0x08;
 
         public struct Ref
         {
@@ -28,125 +27,129 @@ namespace CSharpVarArgsNative
             public ulong DbRef;
         };
 
+        [StructLayout(LayoutKind.Sequential)]
         public struct VarArg
         {
             public long TypeCode;
             public long LongValue;
-            public ulong ULongValue;
             public double DoubleValue;
             public IntPtr PointerValue;
+            public GCHandle GCHandle; // 4 bytes
+            public uint __unused;
         }
 
-        private delegate VarArg ArgMaker(object obj, ref GCHandle h);
+        private delegate void ArgMaker(object obj, ref VarArg va);
 
         private static Dictionary<Type, ArgMaker> _argMakers = new Dictionary<Type, ArgMaker>()
         {
-            { typeof(string), (object o, ref GCHandle h) =>
+            { typeof(string), (object o, ref VarArg va) =>
                 {
-                    h = GCHandle.Alloc(o, GCHandleType.Pinned);
-                    return new VarArg() { TypeCode = STAR_TYPE_STRING, PointerValue = h.AddrOfPinnedObject() };
+                    va.TypeCode = TYPE_STRING;
+                    va.GCHandle = GCHandle.Alloc(o, GCHandleType.Pinned);
+                    va.PointerValue = va.GCHandle.AddrOfPinnedObject();
                 }
             },
-            { typeof(byte[]), (object o, ref GCHandle h) =>
+            { typeof(byte[]), (object o, ref VarArg va) =>
                 {
-                    h = GCHandle.Alloc(o, GCHandleType.Pinned);
-                    return new VarArg() { TypeCode = STAR_TYPE_BINARY, LongValue = ((byte[])o).Length, PointerValue = h.AddrOfPinnedObject() };
+                    va.TypeCode = TYPE_BINARY;
+                    va.GCHandle = GCHandle.Alloc(o, GCHandleType.Pinned);
+                    va.LongValue = ((byte[])o).Length;
+                    va.PointerValue = va.GCHandle.AddrOfPinnedObject();
                 }
             },
-            { typeof(long), (object o, ref GCHandle h) => { return new VarArg() { TypeCode = STAR_TYPE_LONG, LongValue = (long)o }; } },
-            { typeof(ulong), (object o, ref GCHandle h) => { return new VarArg() { TypeCode = STAR_TYPE_ULONG, ULongValue = (ulong)o }; } },
-            { typeof(float), (object o, ref GCHandle h) => { return new VarArg() { TypeCode = STAR_TYPE_FLOAT, DoubleValue = (float)o }; } },
-            { typeof(double), (object o, ref GCHandle h) => { return new VarArg() { TypeCode = STAR_TYPE_DOUBLE, DoubleValue = (double)o }; } },
-            { typeof(Ref), (object o, ref GCHandle h) => { Ref r = (Ref)o;  return new VarArg() { TypeCode = STAR_TYPE_REFERENCE, LongValue = (long)r.DbId, ULongValue = r.DbRef }; } },
+            { typeof(long), (object o, ref VarArg va) => { va.TypeCode = TYPE_LONG; va.LongValue = (long)o; } },
+            { typeof(ulong), (object o, ref VarArg va) => { va.TypeCode = TYPE_ULONG; va.LongValue = (long)(ulong)o; } },
+            { typeof(float), (object o, ref VarArg va) => { va.TypeCode = TYPE_FLOAT; va.DoubleValue = (float)o; } },
+            { typeof(double), (object o, ref VarArg va) => { va.TypeCode = TYPE_DOUBLE; va.DoubleValue = (double)o; } },
+            { typeof(Ref), (object o, ref VarArg va) => { Ref r = (Ref)o; va.TypeCode = TYPE_REFERENCE; va.LongValue = (long)r.DbId; va.PointerValue = (IntPtr)r.DbRef; } },
         };
 
         public static void Variadic(StringBuilder sb, params object[] args)
         {
             VarArg[] varargs = new VarArg[args.Length];
-            GCHandle[] handles = new GCHandle[args.Length];
             ArgMaker maker;
             for (int i = 0; i < args.Length; i++)
             {
                 object obj = args[i];
                 if (!_argMakers.TryGetValue(obj.GetType(), out maker))
                     throw new Exception("Type not supported: " + obj.GetType().FullName);
-                varargs[i] = maker(obj, ref handles[i]);
+                maker(obj, ref varargs[i]);
             }
             GCHandle handle = GCHandle.Alloc(varargs, GCHandleType.Pinned);
             CSharpVarArgsNative(sb, (sb == null ? 0U : (uint)sb.Capacity), varargs.Length, handle.AddrOfPinnedObject());
-            foreach (var h in handles)
-                if (h.IsAllocated)
-                    h.Free();
+            foreach (var va in varargs)
+                if (va.GCHandle.IsAllocated)
+                    va.GCHandle.Free();
             handle.Free();
             return;
         }
 
-        private unsafe delegate void UnsafeArgBuilder(object obj, ref GCHandle h, long* varargs);
+        private unsafe delegate void UnsafeArgBuilder(object obj, long* varargs);
 
-        private static unsafe UnsafeArgBuilder _buildString = (object o, ref GCHandle h, long* varargs) =>
+        private static unsafe UnsafeArgBuilder _buildString = (object o, long* varargs) =>
         {
-            h = GCHandle.Alloc(o, GCHandleType.Pinned);
-            *varargs++ = STAR_TYPE_STRING; // TypeCode
+            var h = GCHandle.Alloc(o, GCHandleType.Pinned);
+            *varargs++ = TYPE_STRING; // TypeCode
             *varargs++ = 0; // LongValue
-            *varargs++ = 0; // ULongValue
             *varargs++ = 0; // double
             *varargs++ = h.AddrOfPinnedObject().ToInt64(); // Pointer
+            *(GCHandle*)varargs++ = h;
         };
 
-        private static unsafe UnsafeArgBuilder _buildBinary = (object o, ref GCHandle h, long* varargs) =>
+        private static unsafe UnsafeArgBuilder _buildBinary = (object o, long* varargs) =>
         {
-            h = GCHandle.Alloc(o, GCHandleType.Pinned);
-            *varargs++ = STAR_TYPE_BINARY; // TypeCode
+            var h = GCHandle.Alloc(o, GCHandleType.Pinned);
+            *varargs++ = TYPE_BINARY; // TypeCode
             *varargs++ = ((byte[])o).Length; // LongValue
-            *varargs++ = 0; // ULongValue
             *varargs++ = 0; // double
             *varargs++ = h.AddrOfPinnedObject().ToInt64(); // Pointer
+            *(GCHandle*)varargs++ = h;
         };
 
-        private static unsafe UnsafeArgBuilder _buildLong = (object o, ref GCHandle h, long* varargs) =>
+        private static unsafe UnsafeArgBuilder _buildLong = (object o, long* varargs) =>
         {
-            *varargs++ = STAR_TYPE_LONG; // TypeCode
+            *varargs++ = TYPE_LONG; // TypeCode
             *varargs++ = (long)o; // LongValue
-            *varargs++ = 0; // ULongValue
             *varargs++ = 0; // double
             *varargs++ = 0; // Pointer
+            *varargs++ = 0; // GCHandle & __unused
         };
 
-        private static unsafe UnsafeArgBuilder _buildULong = (object o, ref GCHandle h, long* varargs) =>
+        private static unsafe UnsafeArgBuilder _buildULong = (object o, long* varargs) =>
         {
-            *varargs++ = STAR_TYPE_ULONG; // TypeCode
-            *varargs++ = 0; // LongValue
-            *(ulong*)varargs++ = (ulong)o; // ULongValue
+            *varargs++ = TYPE_ULONG; // TypeCode
+            *varargs++ = (long)(ulong)o; // LongValue
             *varargs++ = 0; // double
             *varargs++ = 0; // Pointer
+            *varargs++ = 0; // GCHandle & __unused
         };
 
-        private static unsafe UnsafeArgBuilder _buildFloat = (object o, ref GCHandle h, long* varargs) =>
+        private static unsafe UnsafeArgBuilder _buildFloat = (object o, long* varargs) =>
         {
-            *varargs++ = STAR_TYPE_FLOAT; // TypeCode
+            *varargs++ = TYPE_FLOAT; // TypeCode
             *varargs++ = 0; // LongValue
-            *varargs++ = 0; // ULongValue
             *(double*)varargs++ = (float)o; // double
             *varargs++ = 0; // Pointer
+            *varargs++ = 0; // GCHandle & __unused
         };
 
-        private static unsafe UnsafeArgBuilder _buildDouble = (object o, ref GCHandle h, long* varargs) =>
+        private static unsafe UnsafeArgBuilder _buildDouble = (object o, long* varargs) =>
         {
-            *varargs++ = STAR_TYPE_DOUBLE; // TypeCode
+            *varargs++ = TYPE_DOUBLE; // TypeCode
             *varargs++ = 0; // LongValue
-            *varargs++ = 0; // ULongValue
             *(double*)varargs++ = (double)o; // double
             *varargs++ = 0; // Pointer
+            *varargs++ = 0; // GCHandle & __unused
         };
 
-        private static unsafe UnsafeArgBuilder _buildRef = (object o, ref GCHandle h, long* varargs) =>
+        private static unsafe UnsafeArgBuilder _buildRef = (object o, long* varargs) =>
         {
             Ref r = (Ref)o;
-            *varargs++ = STAR_TYPE_REFERENCE; // TypeCode
+            *varargs++ = TYPE_REFERENCE; // TypeCode
             *(ulong*)varargs++ = r.DbId; // LongValue
-            *(ulong*)varargs++ = r.DbRef; // ULongValue
             *varargs++ = 0; // double
-            *varargs++ = 0; // Pointer
+            *(ulong*)varargs++ = r.DbRef; // Pointer
+            *varargs++ = 0; // GCHandle & __unused
         };
 
         private static Dictionary<Type, UnsafeArgBuilder> _argBuilders = new Dictionary<Type, UnsafeArgBuilder>()
@@ -163,21 +166,25 @@ namespace CSharpVarArgsNative
         public static unsafe void UnsafeVariadic(StringBuilder sb, params object[] args)
         {
             long* varargs = stackalloc long[args.Length * 5];
-            GCHandle[] handles = new GCHandle[args.Length];
-            UnsafeArgBuilder builder;
             long* ptr = varargs;
+            UnsafeArgBuilder builder;
             for (int i = 0; i < args.Length; i++)
             {
                 object obj = args[i];
                 if (!_argBuilders.TryGetValue(obj.GetType(), out builder))
                     throw new Exception("Type not supported: " + obj.GetType().FullName);
-                builder(obj, ref handles[i], ptr);
+                builder(obj, ptr);
                 ptr += 5;
             }
             CSharpVarArgsNative(sb, (sb == null ? 0U : (uint)sb.Capacity), args.Length, new IntPtr(varargs));
-            foreach (var h in handles)
+            ptr = varargs + 4;
+            for (int i = 0; i < args.Length; i++)
+            {
+                GCHandle h = *(GCHandle*)ptr;
                 if (h.IsAllocated)
                     h.Free();
+                ptr += 5;
+            }
             return;
         }
 
@@ -239,6 +246,8 @@ namespace CSharpVarArgsNative
 
         static void Main(string[] args)
         {
+            Debug.Assert(Marshal.SizeOf(typeof(GCHandle)) == 4);
+            Debug.Assert(Marshal.SizeOf(typeof(NativeAPI.VarArg)) == 5 * 8);
             Correctness("[LONG=1] [STRING='2'] [DOUBLE=3.125] [FLOAT=1.0001] [ULONG=4] [BINARY: 1 2 3 4 5] [REFERENCE:777@999] ",
                 1L, "2", 3.125, 1.0001F, 4UL, new byte[5] { 1, 2, 3, 4, 5 }, new NativeAPI.Ref(777, 999));
             Benchmark("OnlyValueTypes", 1L, 3.125, 4UL, new NativeAPI.Ref(777, 999));
