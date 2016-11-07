@@ -13,3 +13,5 @@ Both implementations will pin pointer types (`byte[]` and `string`) for the dura
 1617 calls/millisecond for SAFE "AllTypes"
 1944 calls/millisecond for UNSAFE "AllTypes"
 ```
+
+An interesting note here is that in some cases, pinning strings and buffers isn't the most performant way of passing these values. In the case of a slow native call, pinning objects will degrade GC performance and may cause erratic performance in multithreaded applications. In these situations, it's better to rely on P/Invoke or to use unmanaged memory allocations and make copies.
